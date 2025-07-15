@@ -234,11 +234,12 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
                 #org_logits = org_logits.reshape(B * 6, C)
                 crop_logits = crop_logits.mean(dim=1)
 
-                log_probs_crop = F.log_softmax(crop_logits, dim=1)
+                #log_probs_crop = F.log_softmax(crop_logits, dim=1)
                 probs_org = F.softmax(org_logits, dim=1)
                 
-                l2g_loss = F.kl_div(log_probs_crop, probs_org, reduction='batchmean')
+                #l2g_loss = F.kl_div(log_probs_crop, probs_org, reduction='batchmean')
                 #loss += l2g_loss
+                loss += soft_target_cross_entropy(crop_logits, probs_org)
                 loss += F.cross_entropy(crop_logits, target)
                 
             
@@ -276,7 +277,7 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
     
     acc_test = evaluate_aug_mix(args, clip_model, test_loader, dataset)
     log(acc_test, log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
-    log("**** Final test accuracy: {:.2f}. ****\n".format(acc_test), log_file=f"log.txt")
+    #log("**** Final test accuracy: {:.2f}. ****\n".format(acc_test), log_file=f"log.txt")
     
     if args.save_path != None:
         save_lora(args, list_lora_layers)
