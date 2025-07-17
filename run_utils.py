@@ -44,6 +44,9 @@ def get_arguments():
     # added
     parser.add_argument('--aug_test', type=str, choices=['none', 'mixup', 'cutmix'], default='none')
     parser.add_argument('--multi_crops', default=False, action='store_true')
+    parser.add_argument('--patch_matching', default=False, action='store_true')
+    parser.add_argument('--noise_scale', default=0.02, type=float)
+    parser.add_argument('--num_fine_weights', default=4, type=int)
     
     args = parser.parse_args()
 

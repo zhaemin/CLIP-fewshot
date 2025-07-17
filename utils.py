@@ -110,6 +110,24 @@ def cls_acc(output, target, topk=1):
     return acc
 
 
+def classwise_accuracy(output, target, num_classes, topk=1):
+    pred = output.topk(topk, dim=1, largest=True, sorted=True)[1]  # (N, topk)
+    correct = pred.eq(target.view(-1, 1).expand_as(pred))  # (N, topk)
+
+    class_correct = torch.zeros(num_classes)
+    class_total = torch.zeros(num_classes)
+
+    for i in range(target.size(0)):
+        label = target[i].item()
+        class_total[label] += 1
+        if correct[i].any():
+            class_correct[label] += 1
+
+    class_acc = 100 * class_correct / (class_total + 1e-8)
+    return class_acc.cpu().numpy()
+
+
+
 def clip_classifier(classnames, template, clip_model):
     with torch.no_grad():
         clip_weights = []

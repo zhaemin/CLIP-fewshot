@@ -15,6 +15,8 @@ def cls_acc_aug_hit(logits, y_a, y_b):
     return correct.float().mean().item()
 
 
+
+
 def evaluate_aug_mix(args, clip_model, loader, dataset):
     clip_model.eval()
     with torch.no_grad():
@@ -56,7 +58,7 @@ def evaluate_aug_mix(args, clip_model, loader, dataset):
                 image_features = clip_model.encode_image(images)
             
             image_features = image_features/image_features.norm(dim=-1, keepdim=True)
-
+            image_features = image_features[:, 0, :]
             cosine_similarity = image_features @ text_features.t()
 
             org_acc += cls_acc(cosine_similarity[:B], target) * B
@@ -79,7 +81,7 @@ def evaluate_aug_mix(args, clip_model, loader, dataset):
     return f'org acc: {round(org_acc,2)}, aug acc: {round(aug_acc,2)}, org_acc_top2: {round(org_acc_top2, 2)}, aug_acc_top2: {round(aug_acc_top2, 2)}, aug_acc_hit: {round(aug_acc_hit, 2)}'
 
 
-
+'''
 def evaluate_lora(args, clip_model, loader, dataset):
     clip_model.eval()
     with torch.no_grad():
@@ -104,6 +106,56 @@ def evaluate_lora(args, clip_model, loader, dataset):
     acc /= tot_samples
 
     return acc
+'''
+def evaluate_lora(args, clip_model, loader, dataset):
+    clip_model.eval()
+    with torch.no_grad():
+        template = dataset.template[0] 
+        texts = [template.format(classname.replace('_', ' ')) for classname in dataset.classnames]
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            texts = clip.tokenize(texts).cuda()
+            class_embeddings = clip_model.encode_text(texts)
+        text_features = class_embeddings/class_embeddings.norm(dim=-1, keepdim=True)
+        
+    acc = 0.
+    patch_acc = 0.
+    mean_acc = 0.
+    tot_samples = 0
+    with torch.no_grad():
+        for i, (images, target, multi_crops) in enumerate(loader):
+            images, target = images.cuda(), target.cuda()
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                image_features = clip_model.encode_image(images)
+            image_features = image_features/image_features.norm(dim=-1, keepdim=True)
+
+            cls_features = image_features[:, 0]
+            patch_features = image_features[:, 1:]
+            B, N, D = patch_features.shape
+            C, tD = text_features.shape
+            patch_features = patch_features.reshape(-1, D) # bs*N D
+
+            cls_cosine_similarity = cls_features @ text_features.t()
+            
+            patch_cosine_similarity = patch_features @ text_features.t()
+            patch_class_probs = patch_cosine_similarity.view(B, N, C)
+            patch_prediction_target = F.one_hot(patch_class_probs.argmax(dim=-1), C).float()
+            patch_class_probs = patch_prediction_target.mean(dim=1) # B
+
+            cls_probs = cls_cosine_similarity.softmax(dim=-1)
+            patch_probs = patch_class_probs.softmax(dim=-1)
+
+            mean_probs = (cls_probs + patch_probs) / 2
+            mean_acc += cls_acc(mean_probs, target) * len(mean_probs)
+
+            acc += cls_acc(cls_cosine_similarity, target) * len(cls_cosine_similarity)
+            patch_acc += cls_acc(patch_class_probs, target) * len(patch_class_probs)
+
+            tot_samples += len(cls_cosine_similarity)
+    acc /= tot_samples
+    patch_acc /= tot_samples
+    mean_acc /= tot_samples
+
+    return acc, patch_acc, mean_acc
 
 def get_crop_features(multi_crops, clip_model):
     multi_crops = multi_crops.cuda() # bs 6 3 96 96
@@ -124,7 +176,7 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
     # Textual features
     print("\nGetting textual features as CLIP's classifier.")
     textual_features = clip_classifier(dataset.classnames, dataset.template, clip_model)
-
+    '''
     # Pre-load val features
     print("\nLoading visual features and labels from val set.")
     val_features, val_labels = pre_load_features(clip_model, val_loader)
@@ -143,16 +195,15 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
     
     test_features = test_features.cpu()
     test_labels = test_labels.cpu()
-    
+    '''
     
     list_lora_layers = apply_lora(args, clip_model)
     clip_model = clip_model.cuda() 
     
     if args.eval_only:
-        #load_lora(args, list_lora_layers)
-        acc_test = evaluate_aug_mix(args, clip_model, test_loader, dataset)
-        log(acc_test)
-        return
+        load_lora(args, list_lora_layers)
+        acc_test, patch_acc_test, mean_acc_test = evaluate_lora(args, clip_model, test_loader, dataset)
+        log("**** Final test accuracy(cls): {:.2f}.  // (patch): {:.2f}. // (mean): {:.2f} ****\n".format(acc_test, patch_acc_test, mean_acc_test), log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
 
     mark_only_lora_as_trainable(clip_model)
     total_iters = args.n_iters * args.shots
@@ -210,6 +261,7 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
                         image_features = clip_model.encode_image(images)
                         
             image_features = image_features/image_features.norm(dim=-1, keepdim=True)
+            image_features = image_features[:, 0, :]
             cosine_similarity = logit_scale * image_features @ text_features.t()
            
             if args.aug_test != 'none':
@@ -230,17 +282,11 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
                 
                 B, C = cosine_similarity.shape
                 org_logits = cosine_similarity
-                #org_logits = org_logits.expand(B, 6, C)  
-                #org_logits = org_logits.reshape(B * 6, C)
                 crop_logits = crop_logits.mean(dim=1)
 
-                #log_probs_crop = F.log_softmax(crop_logits, dim=1)
                 probs_org = F.softmax(org_logits, dim=1)
-                
-                #l2g_loss = F.kl_div(log_probs_crop, probs_org, reduction='batchmean')
-                #loss += l2g_loss
                 loss += soft_target_cross_entropy(crop_logits, probs_org)
-                loss += F.cross_entropy(crop_logits, target)
+                #loss += F.cross_entropy(crop_logits, target)
                 
             
             acc_train += cls_acc(cosine_similarity[:B], target) * target.shape[0]
@@ -275,9 +321,8 @@ def run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, t
         print(mean(local_accs))
         print(mean(global_accs))
     
-    acc_test = evaluate_aug_mix(args, clip_model, test_loader, dataset)
-    log(acc_test, log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
-    #log("**** Final test accuracy: {:.2f}. ****\n".format(acc_test), log_file=f"log.txt")
+    acc_test, patch_acc_test, mean_acc_test = evaluate_lora(args, clip_model, test_loader, dataset)
+    log("**** Final test accuracy(cls): {:.2f}.  // (patch): {:.2f}. // (mean): {:.2f} ****\n".format(acc_test, patch_acc_test, mean_acc_test), log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
     
     if args.save_path != None:
         save_lora(args, list_lora_layers)

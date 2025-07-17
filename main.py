@@ -7,7 +7,7 @@ from datasets.utils import build_data_loader, ImageFolderWrapper
 from utils import *
 from run_utils import *
 from lora import run_lora 
-
+from lora_patchmatching import PatchMatchingLoRA
 
 
 def main():
@@ -50,9 +50,30 @@ def main():
         else:
             train_loader = build_data_loader(data_source=dataset.train_x, batch_size=args.batch_size, tfm=train_tranform, is_train=True, shuffle=True, num_workers=8, multi_crops=args.multi_crops)
     
-    log(f'{args.dataset}_{args.shots}_results', log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
+    if args.patch_matching:
+        model = PatchMatchingLoRA(len(dataset.classnames), text_dim=512, noise_scale=args.noise_scale, num_fine_weights=args.num_fine_weights)
+        model.cuda()
 
-    run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader)
+        if args.eval_only:
+            model.load_state_dict(torch.load(f'{args.save_path}/vitb16/{args.dataset}/{args.shots}shots/seed{args.seed}_patchmatching_{args.noise_scale}/model.pt', map_location='cuda'))
+            model.load_lora_(args, clip_model)
+        else:
+            log(f'{args.dataset}_{args.shots}_nfw{args.num_fine_weights}_results', log_file=f"log/log_patchlevel_ns{args.noise_scale}.txt")
+            model.run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader)
+
+            backbone = args.backbone.replace('/', '').replace('-', '').lower()
+            save_dir = f'{args.save_path}/{backbone}/{args.dataset}/{args.shots}shots/seed{args.seed}_patchmatching_{args.noise_scale}'
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = f"{save_dir}/model.pt"
+            torch.save(model.state_dict(), save_path)
+
+        acc_test, patch_acc_test, mean_acc_test = model.evaluate_lora(args, clip_model, test_loader, dataset)
+        log("**** Final test accuracy(cls): {:.2f}.  // (patch): {:.2f}. // (mean): {:.2f} ****\n".format(acc_test, patch_acc_test, mean_acc_test), log_file=f"log/log_patchlevel_ns{args.noise_scale}.txt")
+
+        
+    else:
+        log(f'{args.dataset}_{args.shots}_results', log_file=f"log/log_{args.aug_test}_mc{args.multi_crops}_seed{args.seed}.txt")
+        run_lora(args, clip_model, logit_scale, dataset, train_loader, val_loader, test_loader)
 
 
 if __name__ == '__main__':
