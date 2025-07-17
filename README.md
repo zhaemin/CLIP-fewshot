@@ -7,6 +7,7 @@ To start training , simply execute:
 
 ```bash
 bash run_main.sh
+```
 
 
 
